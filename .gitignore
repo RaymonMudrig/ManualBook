@@ -1,0 +1,28 @@
+#
+# OS generated files
+#
+.DS_Store
+
+#
+# Python.gitignore
+#
+.env
+.env.*
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+
+#
+# project gitignore
+#
+docx/
+md/
+output/
+schemas/
+trash/
+
+**.png

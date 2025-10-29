@@ -1,0 +1,286 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f7f7fb;
+  --panel-bg: rgba(255, 255, 255, 0.92);
+  --panel-border: rgba(30, 60, 114, 0.15);
+  --text: #1f2937;
+  --accent: #2563eb;
+  --accent-dark: #1d4ed8;
+  --badge-bg: rgba(37, 99, 235, 0.1);
+  --badge-text: #1d4ed8;
+  --success: #16a34a;
+  --danger: #dc2626;
+  --muted: #6b7280;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 32px 20px 48px;
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.page__header h1 {
+  margin: 0 0 8px;
+  font-size: clamp(1.8rem, 4vw, 2.4rem);
+}
+
+.page__tagline {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.98rem;
+}
+
+.page__main {
+  display: grid;
+  gap: 24px;
+}
+
+.panel {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: 18px;
+  padding: 24px;
+  box-shadow: 0 24px 48px rgba(15, 23, 42, 0.08);
+  backdrop-filter: blur(10px);
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+}
+
+.form__row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+}
+
+.form__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.form__field--query {
+  flex: 1;
+  min-width: 0;
+}
+
+.form__field--threshold {
+  width: 120px;
+  flex-shrink: 0;
+}
+
+.form__field--topk {
+  width: 100px;
+  flex-shrink: 0;
+}
+
+label {
+  font-weight: 600;
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+input[type="text"],
+input[type="number"] {
+  width: 100%;
+  border-radius: 10px;
+  border: 1px solid var(--panel-border);
+  padding: 12px 14px;
+  font-size: 1rem;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+input[type="number"] {
+  padding: 10px 12px;
+  font-size: 0.95rem;
+}
+
+button[type="submit"] {
+  padding: 12px 24px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease,
+    background 0.15s ease;
+  white-space: nowrap;
+  align-self: flex-end;
+  flex-shrink: 0;
+}
+
+button[type="submit"]:hover {
+  background: var(--accent-dark);
+  box-shadow: 0 12px 24px rgba(37, 99, 235, 0.25);
+  transform: translateY(-1px);
+}
+
+button[type="submit"]:disabled {
+  background: rgba(37, 99, 235, 0.5);
+  cursor: not-allowed;
+  box-shadow: none;
+  transform: none;
+}
+
+.status {
+  min-height: 24px;
+  font-size: 0.95rem;
+  color: var(--muted);
+}
+
+.status--error {
+  color: var(--danger);
+}
+
+.status--success {
+  color: var(--success);
+}
+
+.answer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: var(--badge-bg);
+  color: var(--badge-text);
+  text-transform: uppercase;
+  font-size: 0.75rem;
+  letter-spacing: 0.03em;
+}
+
+/* Markdown content styling */
+.markdown-content {
+  margin-top: 12px;
+  line-height: 1.7;
+  font-size: 0.98rem;
+}
+
+.markdown-content h1,
+.markdown-content h2,
+.markdown-content h3,
+.markdown-content h4 {
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+  color: var(--text);
+}
+
+.markdown-content p {
+  margin: 0.8em 0;
+}
+
+.markdown-content ul,
+.markdown-content ol {
+  margin: 0.8em 0;
+  padding-left: 2em;
+}
+
+.markdown-content li {
+  margin: 0.4em 0;
+}
+
+.markdown-content code {
+  background: rgba(15, 23, 42, 0.08);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-family: "SFMono-Regular", "JetBrains Mono", Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.markdown-content pre {
+  background: rgba(15, 23, 42, 0.03);
+  padding: 16px;
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.05);
+  overflow-x: auto;
+}
+
+.markdown-content pre code {
+  background: none;
+  padding: 0;
+}
+
+.markdown-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 8px;
+  margin: 16px 0;
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.1);
+}
+
+.markdown-content a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.markdown-content a:hover {
+  text-decoration: underline;
+}
+
+.markdown-content blockquote {
+  border-left: 4px solid var(--accent);
+  padding-left: 16px;
+  margin: 1em 0;
+  color: var(--muted);
+}
+
+/* Source articles styling */
+.sources h3 {
+  margin: 24px 0 16px;
+  font-size: 1.2rem;
+  color: var(--text);
+}
+
+.source-article {
+  background: rgba(15, 23, 42, 0.03);
+  border: 1px solid rgba(15, 23, 42, 0.05);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.source-article h4 {
+  margin: 0 0 8px;
+  font-size: 1.1rem;
+  color: var(--text);
+}
+
+.source-meta {
+  font-size: 0.875rem;
+  color: var(--muted);
+  margin-bottom: 12px;
+}
+
+.source-content {
+  margin: 12px 0 0;
+  padding: 16px;
+  background: rgba(255, 255, 255, 0.5);
+  border-radius: 8px;
+  max-height: 600px;
+  overflow-y: auto;
+}
+
+/* Removed two-column layout - results now appear below input */
