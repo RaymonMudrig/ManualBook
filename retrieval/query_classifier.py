@@ -39,19 +39,29 @@ Classify this query and return JSON:
     "confidence": 0.0-1.0
 }}
 
-Intent rules:
-- "do": User wants step-by-step instructions (how to, guide, tutorial, set up, configure, create, add, remove)
-- "learn": User wants to understand concepts (what is, explain, definition, understand, learn about)
-- "trouble": User has a problem to solve (error, not working, issue, problem, fix, broken, failed)
+Intent rules (PRIMARY - always classify):
+- "do": User wants to perform an action (show, add, create, configure, set up, remove, open, display, how to)
+- "learn": User wants to understand concepts (what is, explain, definition, understand, learn about, describe)
+- "trouble": User has a problem to solve (error, not working, issue, problem, fix, broken, failed, troubleshoot)
 
-Category rules:
-- "application": About UI, features, configuration, workspace, widgets, templates, settings, interface
-- "data": About market data, orderbook, prices, trades, quotes, depth, ticker, instruments
-- "unknown": Cannot determine category
+Category rules (SECONDARY - only if explicitly mentioned):
+- "application": ONLY if query contains words: widget, interface, workspace, template, settings, menu, window, panel, toolbar
+- "data": ONLY if query contains words: "data structure", "data format", "data content", "schema", "fields"
+- "unknown": DEFAULT for all other cases
+
+CRITICAL: Use category="unknown" unless the query literally contains the specific words listed above.
+
+Examples:
+- "show orderbook" → intent=do, category=unknown (no widget/data keywords)
+- "show orderbook widget" → intent=do, category=application (contains "widget")
+- "what is orderbook" → intent=learn, category=unknown (no widget/data keywords)
+- "explain orderbook data structure" → intent=learn, category=data (contains "data structure")
+- "add workspace" → intent=do, category=unknown ("workspace" alone is ambiguous)
+- "configure workspace settings" → intent=do, category=application (contains "settings")
 
 Topics: Extract 2-5 key terms or phrases from the query that represent the main subjects.
 
-Confidence: 0.0-1.0 (how confident you are in the classification)
+Confidence: 0.0-1.0 (how confident you are in the intent classification)
 
 Return ONLY valid JSON, no other text.
 """
@@ -107,6 +117,9 @@ class QueryClassifier:
 
             # Validate classification
             classification = self._validate_classification(classification)
+
+            # Apply strict category rules (override LLM guessing)
+            classification = self._apply_category_rules(query, classification)
 
             return classification
 
@@ -196,6 +209,46 @@ class QueryClassifier:
             validated["confidence"] = 0.5
 
         return validated
+
+    def _apply_category_rules(self, query: str, classification: Dict) -> Dict:
+        """Apply strict category rules based on keyword presence.
+
+        Force category to "unknown" unless query explicitly contains category keywords.
+        This overrides LLM guessing.
+
+        Args:
+            query: Original query string
+            classification: Classification from LLM
+
+        Returns:
+            Classification with corrected category
+        """
+        query_lower = query.lower()
+
+        # Application keywords
+        app_keywords = ["widget", "interface", "workspace", "template", "settings",
+                       "menu", "window", "panel", "toolbar"]
+
+        # Data keywords (must be multi-word phrases)
+        data_keywords = ["data structure", "data format", "data content",
+                        "schema", "fields"]
+
+        # Check for explicit application keywords
+        has_app_keyword = any(kw in query_lower for kw in app_keywords)
+
+        # Check for explicit data keywords
+        has_data_keyword = any(kw in query_lower for kw in data_keywords)
+
+        # Apply rules
+        if has_app_keyword and not has_data_keyword:
+            classification["category"] = "application"
+        elif has_data_keyword and not has_app_keyword:
+            classification["category"] = "data"
+        else:
+            # No explicit keywords or ambiguous -> force to unknown
+            classification["category"] = "unknown"
+
+        return classification
 
     def _default_classification(self) -> Dict:
         """Return default classification when query is empty or classification fails.

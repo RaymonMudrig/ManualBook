@@ -187,6 +187,8 @@ class CatalogRetriever:
     def _build_filter(self, classification: Optional[Dict]) -> Optional[Dict]:
         """Build ChromaDB metadata filter from classification.
 
+        Strategy: Intent is PRIMARY filter (always use), category is OPTIONAL refinement (skip if "unknown").
+
         Args:
             classification: Query classification
 
@@ -198,14 +200,14 @@ class CatalogRetriever:
 
         filters = []
 
-        # Add intent filter
+        # Add intent filter (primary - always use if available)
         intent = classification.get("intent")
         if intent and intent in ["do", "learn", "trouble"]:
             filters.append({"intent": intent})
 
-        # Add category filter
+        # Add category filter (secondary - only if NOT "unknown")
         category = classification.get("category")
-        if category and category in ["application", "data"]:
+        if category and category in ["application", "data"]:  # Skips "unknown"
             filters.append({"category": category})
 
         # Return None if no filters
