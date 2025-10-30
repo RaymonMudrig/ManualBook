@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Article Metadata Schema",
+  "description": "Metadata schema for ManualBook articles",
+  "type": "object",
+  "properties": {
+    "intent": {
+      "type": "string",
+      "enum": ["do", "learn", "trouble"],
+      "description": "User intent: do (how-to), learn (concept), trouble (troubleshooting)"
+    },
+    "id": {
+      "type": "string",
+      "description": "Unique identifier for the article (human-readable)",
+      "pattern": "^[a-z0-9_-]+$"
+    },
+    "category": {
+      "type": "string",
+      "enum": ["application", "data"],
+      "description": "Article category: application infrastructure or data types"
+    },
+    "see": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "List of related article IDs (see also references)"
+    }
+  },
+  "required": ["intent", "id", "category"],
+  "additionalProperties": false
+}
