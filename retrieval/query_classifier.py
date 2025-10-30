@@ -118,6 +118,9 @@ class QueryClassifier:
             # Validate classification
             classification = self._validate_classification(classification)
 
+            # Apply pattern-based intent overrides (handle ambiguous grammar)
+            classification = self._apply_intent_patterns(query, classification)
+
             # Apply strict category rules (override LLM guessing)
             classification = self._apply_category_rules(query, classification)
 
@@ -247,6 +250,57 @@ class QueryClassifier:
         else:
             # No explicit keywords or ambiguous -> force to unknown
             classification["category"] = "unknown"
+
+        return classification
+
+    def _apply_intent_patterns(self, query: str, classification: Dict) -> Dict:
+        """Apply pattern-based intent overrides for ambiguous queries.
+
+        Handles cases where grammar patterns indicate different intent than LLM classified.
+
+        Args:
+            query: Original query string
+            classification: Classification from LLM
+
+        Returns:
+            Classification with corrected intent
+        """
+        query_lower = query.lower().strip()
+
+        # Pattern 1: "X list" → usually means "show me the list of X" (learn)
+        # Examples: "widget list", "feature list", "command list"
+        if query_lower.endswith(" list") or query_lower == "list":
+            classification["intent"] = "learn"
+            classification["confidence"] = min(1.0, classification.get("confidence", 0.5) + 0.1)
+
+        # Pattern 2: "list X" → imperative command (do)
+        # Examples: "list widgets", "list all features"
+        elif query_lower.startswith("list "):
+            classification["intent"] = "do"
+
+        # Pattern 3: Question words + "list" → seeking information (learn)
+        # Examples: "what is the widget list", "show me widget list"
+        question_words = ["what", "show me", "display", "view", "see", "where is"]
+        if any(word in query_lower for word in question_words):
+            if "list" in query_lower:
+                classification["intent"] = "learn"
+
+        # Pattern 4: Single word or code lookup → likely learn (reference)
+        # Examples: "Q100", "orderbook", "workspace"
+        words = query_lower.split()
+        if len(words) == 1:
+            # Single word could be reference lookup
+            # Check if it looks like a code (uppercase + numbers)
+            if any(char.isdigit() for char in query) and any(char.isupper() for char in query):
+                classification["intent"] = "learn"
+
+        # Pattern 5: "what are/is X" → clearly learn
+        if query_lower.startswith(("what are", "what is", "what's")):
+            classification["intent"] = "learn"
+
+        # Pattern 6: "how to/do I" → clearly do
+        if query_lower.startswith(("how to", "how do i", "how can i")):
+            classification["intent"] = "do"
 
         return classification
 

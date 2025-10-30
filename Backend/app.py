@@ -734,21 +734,47 @@ def handle_query(payload: QueryPayload) -> JSONResponse:
                 "count": len(article_results)
             })
 
-            # Step 3: Build context and sources from articles
+            # Step 3: Check relevance of retrieved articles
+            relevant_results = []
             if article_results:
-                context_block, sources = build_catalog_context(article_results)
-                best_score = max([r["score"] for r in article_results]) if article_results else 0.0
+                # Filter for relevant articles only
+                relevant_results = [r for r in article_results if r.get("is_relevant", True)]
+
+                if not relevant_results:
+                    logger.warning(f"Retrieved {len(article_results)} articles but none are relevant to query")
+                    steps.append({
+                        "stage": "relevance_check",
+                        "status": "failed",
+                        "detail": f"Retrieved {len(article_results)} articles but none are relevant to query",
+                        "retrieved": len(article_results),
+                        "relevant": 0
+                    })
+                    # Fall through to web search
+                else:
+                    logger.info(f"Relevance check: {len(relevant_results)}/{len(article_results)} articles are relevant")
+                    steps.append({
+                        "stage": "relevance_check",
+                        "status": "success",
+                        "detail": f"{len(relevant_results)}/{len(article_results)} articles are relevant",
+                        "retrieved": len(article_results),
+                        "relevant": len(relevant_results)
+                    })
+
+            # Step 4: Build context and sources from relevant articles
+            if relevant_results:
+                context_block, sources = build_catalog_context(relevant_results)
+                best_score = max([r["score"] for r in relevant_results]) if relevant_results else 0.0
 
                 steps.append({
                     "stage": "vector_search",
                     "top_score": round(best_score, 4),
-                    "kept": len(article_results),
+                    "kept": len(relevant_results),
                     "threshold": threshold,
                     "status": "success",
                     "detail": "Retrieved complete articles with relationships"
                 })
 
-                # Step 4: Generate answer
+                # Step 5: Generate answer
                 try:
                     answer = summarize_with_llm(payload.query, context_block, sources)
                     steps.append({

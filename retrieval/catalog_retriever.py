@@ -65,7 +65,8 @@ class CatalogRetriever:
         query: str,
         classification: Optional[Dict] = None,
         top_k: Optional[int] = None,
-        include_related: Optional[bool] = None
+        include_related: Optional[bool] = None,
+        use_intent_fallback: bool = True
     ) -> List[Dict]:
         """Retrieve articles for a query.
 
@@ -74,6 +75,7 @@ class CatalogRetriever:
             classification: Query classification (intent, category, topics)
             top_k: Number of articles to retrieve (default: self.default_top_k)
             include_related: Whether to include related articles (default: self.include_related)
+            use_intent_fallback: Try alternative intent if results are poor (default: True)
 
         Returns:
             List of article results with content and metadata:
@@ -96,16 +98,50 @@ class CatalogRetriever:
         if include_related is None:
             include_related = self.include_related
 
-        # Step 1: Build metadata filter from classification
+        # Step 1: Try primary retrieval
+        results = self._retrieve_with_classification(
+            query, classification, top_k, include_related
+        )
+
+        # Step 2: Intent fallback if results are poor
+        if use_intent_fallback and classification:
+            should_fallback = (
+                len(results) == 0 or  # No results
+                (results and max([r["score"] for r in results]) < 0.70)  # Low scores
+            )
+
+            if should_fallback:
+                # Try alternative intent
+                alt_results = self._retrieve_with_alternative_intent(
+                    query, classification, top_k, include_related
+                )
+
+                # Merge and re-rank results
+                results = self._merge_results(results, alt_results, top_k)
+
+        return results
+
+    def _retrieve_with_classification(
+        self,
+        query: str,
+        classification: Optional[Dict],
+        top_k: int,
+        include_related: bool
+    ) -> List[Dict]:
+        """Retrieve articles with given classification."""
+        # Expand query with catalog synonyms
+        expanded_query = self._expand_query_with_catalog(query)
+
+        # Build metadata filter from classification
         where_filter = self._build_filter(classification)
 
-        # Step 2: Semantic search with metadata filtering
-        search_results = self._semantic_search(query, where_filter, top_k)
+        # Semantic search with metadata filtering (using expanded query)
+        search_results = self._semantic_search(expanded_query, where_filter, top_k)
 
-        # Step 3: Get unique article IDs (deduplicate chunks)
+        # Get unique article IDs (deduplicate chunks)
         article_ids_with_scores = self._deduplicate_articles(search_results)
 
-        # Step 4: Retrieve complete articles from catalog
+        # Retrieve complete articles from catalog
         results = []
         for article_id, score in article_ids_with_scores[:top_k]:
             try:
@@ -128,6 +164,332 @@ class CatalogRetriever:
             except Exception as e:
                 print(f"⚠ Failed to retrieve article '{article_id}': {e}")
                 continue
+
+        # Boost scores for exact title/ID matches
+        results = self._boost_exact_matches(query, results)
+
+        # Check relevance of top results
+        results = self._check_relevance(query, results)
+
+        return results
+
+    def _retrieve_with_alternative_intent(
+        self,
+        query: str,
+        classification: Dict,
+        top_k: int,
+        include_related: bool
+    ) -> List[Dict]:
+        """Retry retrieval with alternative intent (do ↔ learn)."""
+        # Get alternative intent
+        original_intent = classification.get("intent")
+        if original_intent == "do":
+            alt_intent = "learn"
+        elif original_intent == "learn":
+            alt_intent = "do"
+        else:
+            # No clear alternative for "trouble"
+            return []
+
+        # Create alternative classification
+        alt_classification = {**classification, "intent": alt_intent}
+
+        print(f"🔄 Intent fallback: {original_intent} → {alt_intent}")
+
+        # Retrieve with alternative intent
+        return self._retrieve_with_classification(
+            query, alt_classification, top_k, include_related
+        )
+
+    def _merge_results(
+        self,
+        primary_results: List[Dict],
+        fallback_results: List[Dict],
+        top_k: int
+    ) -> List[Dict]:
+        """Merge primary and fallback results, de-duplicate and re-rank."""
+        # Collect all results with their scores
+        all_results = {}
+
+        # Add primary results (full weight)
+        for result in primary_results:
+            article_id = result["article"]["id"]
+            all_results[article_id] = result
+
+        # Add fallback results (80% weight to prefer primary)
+        for result in fallback_results:
+            article_id = result["article"]["id"]
+            if article_id not in all_results:
+                # Apply weight penalty for fallback results
+                result["score"] *= 0.8
+                all_results[article_id] = result
+            # If already in primary, keep the primary (higher weight)
+
+        # Sort by score and return top_k
+        merged = sorted(all_results.values(), key=lambda x: x["score"], reverse=True)
+        return merged[:top_k]
+
+    def _expand_query_with_catalog(self, query: str) -> str:
+        """Expand query by adding relevant synonyms and codes from catalog.
+
+        Strategy (CONSERVATIVE):
+        1. Only expand for EXACT matches with article ID or title
+        2. Only expand for EXACT code matches
+        3. Don't expand for partial synonym matches (too noisy)
+
+        Args:
+            query: Original query string
+
+        Returns:
+            Expanded query with added terms
+        """
+        query_lower = query.lower().strip()
+        query_normalized = query_lower.replace('_', ' ').replace('-', ' ')
+        expansion_terms = set()
+        expansion_reason = None
+
+        try:
+            # Load catalog data from file
+            if not self.catalog.catalog_file.exists():
+                return query
+
+            import json
+            import re
+            catalog_data = json.loads(
+                self.catalog.catalog_file.read_text(encoding='utf-8')
+            )
+            articles = catalog_data.get('articles', {})
+
+            for article_id, article_meta in articles.items():
+                # Strategy 1: EXACT article ID match
+                id_normalized = article_id.lower().replace('_', ' ').replace('-', ' ')
+                if query_normalized == id_normalized:
+                    expansion_terms.update(article_meta.get('synonyms', []))
+                    expansion_terms.update(article_meta.get('codes', []))
+                    expansion_reason = f"Exact ID match: {article_id}"
+                    break  # Found exact match, stop searching
+
+                # Strategy 2: Title match (all query words in title, or 80%+ overlap)
+                title = article_meta.get('title', '').lower()
+                title_clean = re.sub(r'[^\w\s]', '', title).strip()
+
+                # Check if this is a strong title match
+                query_words_set = set(query_normalized.split())
+                title_words_set = set(title_clean.split())
+
+                if query_words_set <= title_words_set:  # All query words in title
+                    # Additional check: title shouldn't have too many extra words
+                    extra_words = len(title_words_set - query_words_set)
+                    if extra_words <= 3:  # Allow up to 3 extra words in title
+                        expansion_terms.update(article_meta.get('synonyms', []))
+                        expansion_terms.update(article_meta.get('codes', []))
+                        expansion_reason = f"Title match: {article_meta.get('title')}"
+                        break  # Found match, stop searching
+
+                # Strategy 3: EXACT code match (Q100, C200, etc.)
+                codes = article_meta.get('codes', [])
+                for code in codes:
+                    # Exact code match (case-insensitive)
+                    if query_lower == code.lower():
+                        expansion_terms.update(article_meta.get('synonyms', []))
+                        expansion_terms.update(codes)
+                        expansion_reason = f"Exact code match: {code}"
+                        break
+
+            # Remove terms already in original query
+            expansion_terms = {t.lower() for t in expansion_terms if t}
+            query_keywords = set(query_lower.split())
+            expansion_terms = expansion_terms - query_keywords
+
+            # Build expanded query (limit to 3 additional terms for specificity)
+            if expansion_terms:
+                additional_terms = list(expansion_terms)[:3]
+                expanded = f"{query} {' '.join(additional_terms)}"
+                print(f"🔍 Query expansion: '{query}' → '{expanded}' ({expansion_reason})")
+                return expanded
+
+        except Exception as e:
+            print(f"⚠ Query expansion failed: {e}")
+
+        return query  # Return original if expansion fails or no exact match
+
+    def _boost_exact_matches(self, query: str, results: List[Dict]) -> List[Dict]:
+        """Boost scores for articles with exact title or ID matches.
+
+        Args:
+            query: Original query string
+            results: List of retrieval results
+
+        Returns:
+            Results with boosted scores for exact matches
+        """
+        query_lower = query.lower().strip()
+        query_normalized = query_lower.replace('_', ' ').replace('-', ' ')
+
+        for result in results:
+            article = result["article"]
+            article_id = article["id"]
+            title = article["title"]
+
+            # Remove emoji and special chars from title
+            import re
+            title_clean = re.sub(r'[^\w\s]', '', title).lower().strip()
+            id_normalized = article_id.replace('_', ' ').replace('-', ' ')
+
+            # Exact title match
+            if query_normalized == title_clean:
+                old_score = result["score"]
+                result["score"] = min(1.0, result["score"] + 0.25)
+                print(f"🎯 Exact title match: '{article_id}' boosted {old_score:.3f} → {result['score']:.3f}")
+
+            # Exact ID match
+            elif query_normalized == id_normalized:
+                old_score = result["score"]
+                result["score"] = min(1.0, result["score"] + 0.20)
+                print(f"🎯 Exact ID match: '{article_id}' boosted {old_score:.3f} → {result['score']:.3f}")
+
+            # Partial title match (all query words in title)
+            elif all(word in title_clean for word in query_normalized.split()):
+                old_score = result["score"]
+                result["score"] = min(1.0, result["score"] + 0.15)
+                print(f"🎯 Partial title match: '{article_id}' boosted {old_score:.3f} → {result['score']:.3f}")
+
+        # Re-sort by boosted scores
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results
+
+    def _extract_specific_terms(self, query: str) -> set:
+        """Extract specific technical terms or proper nouns from query.
+
+        These are terms that must appear in the article for it to be relevant.
+        Includes:
+        - Capitalized words (proper nouns, tech terms like "Docker")
+        - Known technical terms (lowercase but specific like "kubernetes", "python")
+        - Compound technical terms
+
+        Args:
+            query: User query
+
+        Returns:
+            Set of specific terms that must be present
+        """
+        # List of common technical terms (lowercase)
+        tech_terms = {
+            'docker', 'kubernetes', 'k8s', 'aws', 'azure', 'gcp', 'python', 'java',
+            'javascript', 'typescript', 'react', 'vue', 'angular', 'node', 'nodejs',
+            'postgres', 'postgresql', 'mysql', 'mongodb', 'redis', 'nginx', 'apache',
+            'linux', 'ubuntu', 'centos', 'debian', 'windows', 'macos', 'ios', 'android',
+            'github', 'gitlab', 'bitbucket', 'jenkins', 'terraform', 'ansible', 'puppet',
+            'elasticsearch', 'kafka', 'rabbitmq', 'graphql', 'rest', 'api',
+            'machine learning', 'deep learning', 'artificial intelligence', 'blockchain',
+            'cryptocurrency', 'bitcoin', 'ethereum', 'solidity'
+        }
+
+        specific_terms = set()
+        query_lower = query.lower()
+
+        # Check for multi-word technical terms first
+        for term in tech_terms:
+            if ' ' in term and term in query_lower:
+                specific_terms.add(term)
+
+        # Check each word
+        words = query.split()
+        for word in words:
+            word_lower = word.lower()
+            # Skip stop words and common action words
+            if word_lower in {'what', 'is', 'are', 'how', 'to', 'do', 'the', 'a', 'an', 'install', 'setup', 'configure', 'use'}:
+                continue
+
+            # Check if it's a known technical term
+            if word_lower in tech_terms:
+                specific_terms.add(word_lower)
+            # Check if it's capitalized (proper noun)
+            elif word[0].isupper() and len(word) > 2:
+                specific_terms.add(word_lower)
+
+        return specific_terms
+
+    def _check_relevance(self, query: str, results: List[Dict]) -> List[Dict]:
+        """Check if retrieved articles are actually relevant to the query.
+
+        Adds 'is_relevant' flag and 'relevance_score' to each result.
+
+        NEW: If query contains specific technical terms (like "docker", "kubernetes"),
+        the article MUST contain at least one of those terms to be relevant.
+
+        Args:
+            query: Original query string
+            results: List of retrieval results
+
+        Returns:
+            Results with relevance metadata added
+        """
+        if not results:
+            return results
+
+        query_lower = query.lower().strip()
+
+        # Remove common question words and stop words
+        stop_words = {'what', 'is', 'are', 'how', 'to', 'do', 'does', 'the', 'a', 'an', 'in', 'on', 'at', 'for', 'of'}
+        query_words = set(query_lower.split()) - stop_words
+
+        # Extract specific terms that must be present
+        specific_terms = self._extract_specific_terms(query)
+
+        import re
+
+        for result in results:
+            article = result["article"]
+            title = article["title"]
+            content = article.get("content", "")
+
+            # Clean title and content
+            title_clean = re.sub(r'[^\w\s]', '', title).lower()
+            content_lower = content.lower()  # Check full content for specific terms
+
+            # Calculate relevance score based on keyword overlap
+            title_words = set(title_clean.split())
+
+            # Check how many query keywords appear in title
+            title_overlap = len(query_words & title_words)
+            title_relevance = title_overlap / len(query_words) if query_words else 0
+
+            # Check how many query keywords appear in content (first 500 chars for general check)
+            content_snippet = content_lower[:500]
+            content_overlap = sum(1 for word in query_words if word in content_snippet)
+            content_relevance = content_overlap / len(query_words) if query_words else 0
+
+            # Combined relevance score
+            relevance_score = (title_relevance * 0.6) + (content_relevance * 0.4)
+
+            # Mark as relevant if:
+            # 1. Decent relevance score (>= 0.2), OR
+            # 2. Semantic score is high (>= 0.70), OR
+            # 3. Article ID/title contains query keywords (for exact matches)
+            article_id = article["id"]
+            id_match = any(word in article_id.lower() for word in query_words)
+            title_match = relevance_score > 0
+
+            is_relevant = (
+                relevance_score >= 0.2 or
+                result["score"] >= 0.70 or
+                (id_match and result["score"] >= 0.50)
+            )
+
+            # NEW: If query has specific technical terms, article MUST contain them
+            if specific_terms and is_relevant:
+                has_specific_term = any(term in content_lower for term in specific_terms)
+                if not has_specific_term:
+                    is_relevant = False
+                    print(f"⚠ Missing specific term: '{article['id']}' lacks {specific_terms} (relevance={relevance_score:.3f}, score={result['score']:.3f})")
+
+            # Add metadata
+            result["relevance_score"] = round(relevance_score, 3)
+            result["is_relevant"] = is_relevant
+
+            if not is_relevant and not specific_terms:
+                print(f"⚠ Low relevance: '{article['id']}' (relevance={relevance_score:.3f}, score={result['score']:.3f})")
 
         return results
 
