@@ -6,7 +6,6 @@
 #
 # Python.gitignore
 #
-.env
 .env.*
 .venv/
 __pycache__/
