@@ -129,6 +129,11 @@ ARTICLES_DIR = OUTPUT_DIR / "catalog" / "articles"
 if ARTICLES_DIR.exists():
     app.mount("/articles", StaticFiles(directory=ARTICLES_DIR), name="articles")
 
+# Mount md directory to serve markdown documents and their images
+MD_DIR = BASE_DIR / "md"
+if MD_DIR.exists():
+    app.mount("/md", StaticFiles(directory=MD_DIR), name="md")
+
 client: ClientAPI = chromadb.PersistentClient(path=str(INDEX_DIR))
 try:
     collection: Collection = client.get_or_create_collection(name=VECTOR_COLLECTION)
@@ -501,6 +506,25 @@ def build_catalog_context(article_results: List[Dict], max_context_chars: int = 
 
 @app.get("/")
 def read_root() -> FileResponse:
+    """Main page - unified document viewer and query interface."""
+    viewer_file = STATIC_DIR / "viewer.html"
+    if not viewer_file.exists():
+        raise HTTPException(status_code=404, detail="Viewer page not found.")
+    return FileResponse(viewer_file)
+
+
+@app.get("/viewer")
+def read_viewer() -> FileResponse:
+    """Redirect to main page."""
+    viewer_file = STATIC_DIR / "viewer.html"
+    if not viewer_file.exists():
+        raise HTTPException(status_code=404, detail="Viewer page not found.")
+    return FileResponse(viewer_file)
+
+
+@app.get("/query")
+def read_query() -> FileResponse:
+    """Legacy query page - redirect to main page."""
     index_file = STATIC_DIR / "index.html"
     if not index_file.exists():
         raise HTTPException(status_code=404, detail="Frontend not found.")
@@ -510,6 +534,142 @@ def read_root() -> FileResponse:
 @app.get("/health")
 def health_check() -> Dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/api/documents")
+def list_documents() -> JSONResponse:
+    """List all available markdown documents in the md/ directory."""
+    if not MD_DIR.exists():
+        raise HTTPException(status_code=404, detail="MD directory not found.")
+
+    documents = []
+    for md_file in MD_DIR.glob("*.md"):
+        # Skip .mdx files (original language)
+        if md_file.suffix == ".mdx":
+            continue
+
+        # Check for associated images directory
+        images_dir = MD_DIR / f"{md_file.stem}_images"
+        has_images = images_dir.exists() and images_dir.is_dir()
+
+        documents.append({
+            "id": md_file.stem,
+            "name": md_file.name,
+            "title": md_file.stem.replace("_", " "),
+            "has_images": has_images,
+        })
+
+    return JSONResponse({"documents": documents})
+
+
+@app.get("/api/documents/{doc_id}")
+def get_document(doc_id: str) -> JSONResponse:
+    """Get a specific document's content and generate TOC."""
+    if not MD_DIR.exists():
+        raise HTTPException(status_code=404, detail="MD directory not found.")
+
+    # Sanitize doc_id to prevent path traversal
+    doc_id = doc_id.replace("..", "").replace("/", "").replace("\\", "")
+
+    md_file = MD_DIR / f"{doc_id}.md"
+    if not md_file.exists():
+        raise HTTPException(status_code=404, detail=f"Document '{doc_id}' not found.")
+
+    try:
+        content = md_file.read_text(encoding="utf-8")
+
+        # Parse TOC from headings
+        toc = parse_markdown_toc(content)
+
+        # Clean up content: remove METADATA comments
+        content = clean_markdown_content(content)
+
+        # Fix image paths to use /md/ prefix
+        content = fix_image_paths(content, doc_id)
+
+        return JSONResponse({
+            "id": doc_id,
+            "name": md_file.name,
+            "content": content,
+            "toc": toc,
+        })
+    except Exception as exc:
+        logger.error(f"Error reading document {doc_id}: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+def parse_markdown_toc(content: str) -> List[Dict[str, object]]:
+    """Parse markdown content and extract heading hierarchy for TOC.
+
+    Returns a flat list of headings with level and id information.
+    """
+    import re
+
+    toc = []
+    lines = content.split("\n")
+    heading_counts: Dict[str, int] = {}
+
+    for line in lines:
+        # Match markdown headings (# to ######)
+        match = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if match:
+            level = len(match.group(1))
+            title = match.group(2).strip()
+
+            # Remove emoji and special characters for ID
+            clean_title = re.sub(r"[^\w\s-]", "", title)
+            heading_id = clean_title.lower().replace(" ", "-")
+
+            # Handle duplicate IDs
+            if heading_id in heading_counts:
+                heading_counts[heading_id] += 1
+                heading_id = f"{heading_id}-{heading_counts[heading_id]}"
+            else:
+                heading_counts[heading_id] = 0
+
+            toc.append({
+                "level": level,
+                "title": title,
+                "id": heading_id,
+            })
+
+    return toc
+
+
+def clean_markdown_content(content: str) -> str:
+    """Remove METADATA HTML comments from markdown content."""
+    import re
+
+    # Remove HTML comments that contain METADATA
+    content = re.sub(r"<!--METADATA.*?-->", "", content, flags=re.DOTALL)
+
+    # Remove any other HTML comments (optional)
+    # content = re.sub(r"<!--.*?-->", "", content, flags=re.DOTALL)
+
+    return content
+
+
+def fix_image_paths(content: str, doc_id: str) -> str:
+    """Fix image paths in markdown to use /md/ prefix."""
+    import re
+
+    # Replace image paths like ![alt](image.png) with ![alt](/md/DocName_images/image.png)
+    def replace_image(match):
+        alt = match.group(1)
+        path = match.group(2)
+
+        # Skip if already absolute or HTTP URL
+        if path.startswith("http") or path.startswith("/"):
+            return match.group(0)
+
+        # If path already contains the images directory, just add /md/ prefix
+        if path.startswith(f"{doc_id}_images/"):
+            return f"![{alt}](/md/{path})"
+
+        # Otherwise, assume images are in {doc_id}_images/ directory
+        return f"![{alt}](/md/{doc_id}_images/{path})"
+
+    return re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_image, content)
 
 
 @app.post("/api/classify")
