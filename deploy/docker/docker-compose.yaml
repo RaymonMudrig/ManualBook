@@ -1,0 +1,39 @@
+services:
+  manual-book-backend:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    command: >
+      uvicorn Backend.app:app --host 0.0.0.0 --port 8800 --reload
+    env_file:
+      - ../../.env
+    ports:
+      - "127.0.0.1:8241:8800"
+    volumes:
+      - ../../:/app
+    depends_on:
+      - chromadb
+    restart: unless-stopped
+
+  manual-book-frontend:
+    image: busybox
+    command: >
+      sh -c "httpd -f -p 80 -h /www"
+    ports:
+      - "127.0.0.1:8242:80"
+    volumes:
+      - ../../frontend:/www:ro
+    restart: unless-stopped
+
+  chromadb:
+    image: chromadb/chroma:0.5.3
+    environment:
+      - ALLOW_RESET=TRUE
+    ports:
+      - "8000:8000"
+    volumes:
+      - chroma-data:/chroma
+    restart: unless-stopped
+
+volumes:
+  chroma-data:

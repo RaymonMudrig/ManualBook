@@ -51,7 +51,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-STATIC_DIR = Path(__file__).resolve().parent / "static"
+STATIC_DIR = BASE_DIR / "frontend"
 OUTPUT_DIR = BASE_DIR / "output"
 INDEX_DIR = OUTPUT_DIR / "vector_index"
 CATALOG_DIR = OUTPUT_DIR / "catalog"
