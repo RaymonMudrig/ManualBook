@@ -25,6 +25,10 @@ const tabQuery = document.getElementById("tab-query");
 const contentDocument = document.getElementById("content-document");
 const contentQuery = document.getElementById("content-query");
 
+const DEFAULT_API_BASE_URL = "/api";
+let apiBaseUrl = null;
+let apiBaseUrlPromise = null;
+
 // State
 let currentDocument = null;
 let tocItems = [];
@@ -40,6 +44,7 @@ const MODE_LABELS = {
 
 // Initialize
 async function init() {
+  await getApiBaseUrl();
   await loadDocumentList();
   setupTabSwitching();
   setupQueryForm();
@@ -67,7 +72,7 @@ function switchTab(tabName) {
 // Load list of available documents
 async function loadDocumentList() {
   try {
-    const response = await fetch("/api/documents");
+    const response = await apiFetch("/documents");
     if (!response.ok) {
       throw new Error(`Failed to load documents: ${response.status}`);
     }
@@ -119,7 +124,7 @@ async function loadDocument(docId) {
   documentArticle.hidden = true;
 
   try {
-    const response = await fetch(`/api/documents/${docId}`);
+    const response = await apiFetch(`/documents/${docId}`);
     if (!response.ok) {
       throw new Error(`Failed to load document: ${response.status}`);
     }
@@ -325,7 +330,7 @@ function setupQueryForm() {
         payload.threshold = Math.max(0, Math.min(1, threshold));
       }
 
-      const response = await fetch("/api/query", {
+      const response = await apiFetch("/query", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -508,6 +513,122 @@ async function safeJson(response) {
 
 function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function normalizeApiBase(value) {
+  if (typeof value !== "string") {
+    return DEFAULT_API_BASE_URL;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return DEFAULT_API_BASE_URL;
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  const withLeading = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  const withoutTrailing = withLeading.replace(/\/+$/, "");
+  return withoutTrailing || "/";
+}
+
+function resolveConfiguredApiBase() {
+  const candidates = [
+    window.API_BASE_URL,
+    window.__MANUAL_BOOK_CONFIG__?.apiBaseUrl,
+    window.__MANUAL_BOOK_API_BASE__,
+  ];
+  const meta = document.querySelector('meta[name="api-base-url"]');
+  if (meta?.content) {
+    candidates.push(meta.content);
+  }
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return normalizeApiBase(candidate);
+    }
+  }
+  return null;
+}
+
+function deriveApiBaseFromScript() {
+  const scripts = Array.from(document.getElementsByTagName("script"));
+  const script =
+    document.currentScript ||
+    scripts.find((tag) => tag.src && tag.src.endsWith("viewer.js")) ||
+    scripts[scripts.length - 1];
+
+  if (script?.src) {
+    try {
+      const scriptUrl = new URL(script.src, window.location.href);
+      const dirPath = scriptUrl.pathname.replace(/\/[^/]*$/, "/");
+      const basePath = dirPath.replace(/\/+$/, "");
+      return normalizeApiBase(`${basePath}/api`);
+    } catch (error) {
+      console.warn("Failed to derive API base URL from script path:", error);
+    }
+  }
+
+  return DEFAULT_API_BASE_URL;
+}
+
+async function loadApiBaseUrl() {
+  const configured = resolveConfiguredApiBase();
+  if (configured) {
+    return configured;
+  }
+
+  const candidates = [
+    new URL("config.json", window.location.href).pathname,
+    "/config.json",
+  ];
+
+  for (const path of candidates) {
+    try {
+      const response = await fetch(path, { cache: "no-cache" });
+      if (!response.ok) {
+        continue;
+      }
+      const data = await response.json();
+      if (data && typeof data.apiBaseUrl === "string" && data.apiBaseUrl.trim()) {
+        return normalizeApiBase(data.apiBaseUrl);
+      }
+    } catch {
+      // Ignore config lookup failures; we'll fall back to defaults.
+    }
+  }
+
+  return deriveApiBaseFromScript();
+}
+
+function getApiBaseUrl() {
+  if (apiBaseUrl) {
+    return Promise.resolve(apiBaseUrl);
+  }
+  if (!apiBaseUrlPromise) {
+    apiBaseUrlPromise = loadApiBaseUrl().then((value) => {
+      apiBaseUrl = value || DEFAULT_API_BASE_URL;
+      window.__MANUAL_BOOK_API_BASE__ = apiBaseUrl;
+      return apiBaseUrl;
+    });
+  }
+  return apiBaseUrlPromise;
+}
+
+async function apiFetch(endpoint, options) {
+  const base = await getApiBaseUrl();
+  const url = joinUrlParts(base, endpoint);
+  return fetch(url, options);
+}
+
+function joinUrlParts(base, endpoint) {
+  const normalizedEndpoint = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+  if (/^https?:\/\//i.test(base)) {
+    return `${base}${normalizedEndpoint}`;
+  }
+  const trimmedBase = base.replace(/\/+$/, "");
+  if (!trimmedBase || trimmedBase === "/") {
+    return normalizedEndpoint;
+  }
+  return `${trimmedBase}${normalizedEndpoint}`;
 }
 
 // Initialize on page load

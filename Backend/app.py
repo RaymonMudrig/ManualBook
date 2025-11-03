@@ -63,6 +63,24 @@ VECTOR_COLLECTION = os.environ.get("VECTOR_COLLECTION", "manual_chunks")
 DEFAULT_TOP_K = int(os.environ.get("DEFAULT_TOP_K", "5"))
 SIMILARITY_THRESHOLD = float(os.environ.get("SIMILARITY_THRESHOLD", "0.7"))
 RETRY_PAUSE = 2.0
+def normalize_api_base(value: Optional[str]) -> str:
+    """Ensure the API base path is normalized for frontend consumption."""
+    if not value:
+        return "/api"
+    trimmed = value.strip()
+    if not trimmed:
+        return "/api"
+    lower_trimmed = trimmed.lower()
+    if lower_trimmed.startswith("http://") or lower_trimmed.startswith("https://"):
+        return trimmed.rstrip("/")
+    if not trimmed.startswith("/"):
+        trimmed = f"/{trimmed}"
+    trimmed = trimmed.rstrip("/")
+    return trimmed or "/"
+
+
+API_BASE_URL = normalize_api_base(os.environ.get("API_BASE_URL"))
+logger.info("Frontend API base URL: %s", API_BASE_URL)
 
 
 class QueryPayload(BaseModel):
@@ -504,36 +522,55 @@ def build_catalog_context(article_results: List[Dict], max_context_chars: int = 
     return "\n\n---\n\n".join(context_lines), sources
 
 
-@app.get("/")
-def read_root() -> FileResponse:
-    """Main page - unified document viewer and query interface."""
-    viewer_file = STATIC_DIR / "viewer.html"
-    if not viewer_file.exists():
-        raise HTTPException(status_code=404, detail="Viewer page not found.")
-    return FileResponse(viewer_file)
-
-
-@app.get("/viewer")
-def read_viewer() -> FileResponse:
-    """Redirect to main page."""
-    viewer_file = STATIC_DIR / "viewer.html"
-    if not viewer_file.exists():
-        raise HTTPException(status_code=404, detail="Viewer page not found.")
-    return FileResponse(viewer_file)
-
-
-@app.get("/query")
-def read_query() -> FileResponse:
-    """Legacy query page - redirect to main page."""
-    index_file = STATIC_DIR / "index.html"
-    if not index_file.exists():
-        raise HTTPException(status_code=404, detail="Frontend not found.")
-    return FileResponse(index_file)
-
-
-@app.get("/health")
+@app.get("/healthz")
 def health_check() -> Dict[str, str]:
     return {"status": "ok"}
+
+@app.get("/readyz")
+def readiness_check():
+    results = {
+        "chromadb": "unknown",
+        "filesystem": "unknown",
+    }
+
+    # 1) Check ChromaDB connectivity
+    try:
+        _ = client.list_collections()
+        results["chromadb"] = "ok"
+    except Exception as exc:
+        logger.error(f"Readiness: ChromaDB unreachable: {exc}")
+        results["chromadb"] = "not ok"
+
+    # 2) Check filesystem
+    try:
+        test_file = OUTPUT_DIR / ".readyz_test"
+        test_file.write_text("ok", encoding="utf-8")
+        _ = test_file.read_text(encoding="utf-8")
+        test_file.unlink(missing_ok=True)
+        results["filesystem"] = "ok"
+    except Exception as exc:
+        logger.error(f"Readiness: Filesystem not writable: {exc}")
+        results["filesystem"] = "not ok"
+
+    # Determine overall status
+    all_ok = all(status == "ok" for status in results.values())
+
+    status = "ready" if all_ok else "not_ready"
+    http_code = 200 if all_ok else 503
+
+    return JSONResponse(
+        status_code=http_code,
+        content={
+            "status": status,
+            "details": results
+        }
+    )
+
+
+@app.get("/config.json")
+def frontend_config() -> Dict[str, str]:
+    """Expose frontend configuration such as API base path."""
+    return {"apiBaseUrl": API_BASE_URL}
 
 
 @app.get("/api/documents")
@@ -931,6 +968,27 @@ def handle_query(payload: QueryPayload) -> JSONResponse:
                 response_payload["mode"] = "none"
     return JSONResponse(response_payload)
 
+@app.get("/{full_path:path}")
+async def spa_router(full_path: str):
+    # If path starts with /api, do not touch (let FastAPI handle it)
+    if full_path.startswith("api/"):
+        raise HTTPException(status_code=404)
+
+    # Serve static file if exists (js, html, css, etc)
+    requested = STATIC_DIR / full_path
+    if requested.is_file():
+        return FileResponse(requested)
+
+    # If request has an extension (e.g. /foo.js) but file not found → 404
+    if "." in full_path:
+        raise HTTPException(status_code=404)
+
+    # Otherwise, serve SPA entrypoint
+    viewer = STATIC_DIR / "viewer.html"
+    if viewer.exists():
+        return FileResponse(viewer)
+
+    raise HTTPException(status_code=404, detail="Viewer not found")
 
 def run_server(host: str = "0.0.0.0", port: int = DEFAULT_PORT, reload: bool = False) -> None:
     try:

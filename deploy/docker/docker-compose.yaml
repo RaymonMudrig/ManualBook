@@ -7,6 +7,8 @@ services:
       uvicorn Backend.app:app --host 0.0.0.0 --port 8800 --reload
     env_file:
       - ../../.env
+    environment:
+      - API_BASE_URL=/idx-terminal/manual-book/api
     ports:
       - "127.0.0.1:8241:8800"
     volumes:

@@ -10,6 +10,10 @@ const modeLabel = document.getElementById("mode-label");
 const sourcesBlock = document.getElementById("sources-block");
 const sourcesList = document.getElementById("sources-list");
 
+const DEFAULT_API_BASE_URL = "/api";
+let apiBaseUrl = null;
+let apiBaseUrlPromise = null;
+
 const MODE_LABELS = {
   rag: "Knowledge Base",
   catalog_rag: "Catalog (Phase 2)",
@@ -41,7 +45,7 @@ form.addEventListener("submit", async (event) => {
       payload.threshold = Math.max(0, Math.min(1, threshold));
     }
 
-    const response = await fetch("/api/query", {
+    const response = await apiFetch("/query", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -141,7 +145,7 @@ function renderResult(data) {
           /!\[([^\]]*)\]\(([^)]+)\)/g,
           (match, alt, path) => {
             // If path doesn't start with http/https or /, prepend /articles/
-            if (!path.startsWith('http') && !path.startsWith('/')) {
+            if (!path.startsWith("http") && !path.startsWith("/")) {
               return `![${alt}](/articles/${path})`;
             }
             return match;
@@ -224,4 +228,120 @@ async function safeJson(response) {
   } catch {
     return null;
   }
+}
+
+function normalizeApiBase(value) {
+  if (typeof value !== "string") {
+    return DEFAULT_API_BASE_URL;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return DEFAULT_API_BASE_URL;
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed.replace(/\/+$/, "");
+  }
+  const withLeading = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  const withoutTrailing = withLeading.replace(/\/+$/, "");
+  return withoutTrailing || "/";
+}
+
+function resolveConfiguredApiBase() {
+  const candidates = [
+    window.API_BASE_URL,
+    window.__MANUAL_BOOK_CONFIG__?.apiBaseUrl,
+    window.__MANUAL_BOOK_API_BASE__,
+  ];
+  const meta = document.querySelector('meta[name="api-base-url"]');
+  if (meta?.content) {
+    candidates.push(meta.content);
+  }
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) {
+      return normalizeApiBase(candidate);
+    }
+  }
+  return null;
+}
+
+function deriveApiBaseFromScript() {
+  const scripts = Array.from(document.getElementsByTagName("script"));
+  const script =
+    document.currentScript ||
+    scripts.find((tag) => tag.src && tag.src.endsWith("script.js")) ||
+    scripts[scripts.length - 1];
+
+  if (script?.src) {
+    try {
+      const scriptUrl = new URL(script.src, window.location.href);
+      const dirPath = scriptUrl.pathname.replace(/\/[^/]*$/, "/");
+      const basePath = dirPath.replace(/\/+$/, "");
+      return normalizeApiBase(`${basePath}/api`);
+    } catch (error) {
+      console.warn("Failed to derive API base URL from script path:", error);
+    }
+  }
+
+  return DEFAULT_API_BASE_URL;
+}
+
+async function loadApiBaseUrl() {
+  const configured = resolveConfiguredApiBase();
+  if (configured) {
+    return configured;
+  }
+
+  const candidates = [
+    new URL("config.json", window.location.href).pathname,
+    "/config.json",
+  ];
+
+  for (const path of candidates) {
+    try {
+      const response = await fetch(path, { cache: "no-cache" });
+      if (!response.ok) {
+        continue;
+      }
+      const data = await response.json();
+      if (data && typeof data.apiBaseUrl === "string" && data.apiBaseUrl.trim()) {
+        return normalizeApiBase(data.apiBaseUrl);
+      }
+    } catch {
+      // Ignore config lookup failures; we'll fall back to defaults.
+    }
+  }
+
+  return deriveApiBaseFromScript();
+}
+
+function getApiBaseUrl() {
+  if (apiBaseUrl) {
+    return Promise.resolve(apiBaseUrl);
+  }
+  if (!apiBaseUrlPromise) {
+    apiBaseUrlPromise = loadApiBaseUrl().then((value) => {
+      apiBaseUrl = value || DEFAULT_API_BASE_URL;
+      window.__MANUAL_BOOK_API_BASE__ = apiBaseUrl;
+      return apiBaseUrl;
+    });
+  }
+  return apiBaseUrlPromise;
+}
+
+async function apiFetch(endpoint, options) {
+  const base = await getApiBaseUrl();
+  const url = joinUrlParts(base, endpoint);
+  return fetch(url, options);
+}
+
+function joinUrlParts(base, endpoint) {
+  const normalizedEndpoint = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
+  if (/^https?:\/\//i.test(base)) {
+    return `${base}${normalizedEndpoint}`;
+  }
+  const trimmedBase = base.replace(/\/+$/, "");
+  if (!trimmedBase || trimmedBase === "/") {
+    return normalizedEndpoint;
+  }
+  return `${trimmedBase}${normalizedEndpoint}`;
 }
